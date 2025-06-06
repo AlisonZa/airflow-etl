@@ -3,7 +3,7 @@ services:
   postgres:
     image: postgres:13
     container_name: postgres_db
-    environment:
+    environment: # This data goes to the connection in AirFlow UI when setting the connection
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres

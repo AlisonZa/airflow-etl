@@ -1,24 +1,29 @@
 from airflow import DAG
-from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.operators.python import PythonOperator
+
+try:
+    from airflow.providers.http.operators.http import SimpleHttpOperator
+except ImportError:
+    from airflow.providers.http.operators.http import HttpOperator as SimpleHttpOperator
+
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.decorators import task
-from airflow.utils.date import days_ago
+from pendulum import datetime
 import json
 
 # Define the DAG
 with DAG(
     dag_id = "nasa_apod_postgres",
-    start_date = days_ago(1),
+    start_date = datetime(2025, 6, 6).subtract(days=1),
     schedule_interval = "@daily",
-    catchup = False,
+    catchup = False,  
 )as dag:
     
     # Defining the tasks:
     ## Task 1 - Create the table, if the table does not exist
-    @task
     def create_table():
         ### Initialize the Postgres hook
-        postgres_hook = PostgresHook(postgres_conn_id = "my_connection_id")
+        postgres_hook = PostgresHook(postgres_conn_id = "my_connection_id") # This name goes to the Airflow UI when setting the connection
 
         ### Query to create the table:
         create_table_query = """
@@ -27,13 +32,18 @@ with DAG(
             title VARCHAR(255),
             explanation TEXT,
             url TEXT,
-            date DATA,
-            media_type VARCHAR(50),
+            date DATE,
+            media_type VARCHAR(50)
             );       
         """
         ### Execute the Query:
         postgres_hook.run(create_table_query)
-        return postgres_hook
+    
+    # Convert to a task
+    create_table_task = PythonOperator(
+        task_id="create_table",
+        python_callable=create_table
+    )
 
     ## Task 2 - [E]xtract the API Data
     ### This is the following http https://api.nasa.gov/planetary/apod?api_key=<YourApiKeyHere>
@@ -42,14 +52,14 @@ with DAG(
         http_conn_id = "nasa_api",
         endpoint = "planetary/apod",
         method = "GET",
-        data = {"api_key":"{{conn.nasa_api.extra_dejson.api_key}}"}, ### Set the API Key in runtime
-        response_filters = lambda response:response.json(),
+        data = {"api_key":"{{conn.nasa_api.extra_dejson.api_key}}"}, # Extract the information from the AirFlow connection (set via UI)
+        response_filter = lambda response:response.json(),
     )
 
     ## Task 3 - [T]ransform the Data
     @task
     def transform_apod_data(response):
-        apod_data = {
+        apod_data = {   
             "title": response.get("title", ""),
             "explanation": response.get("explanation", ""),
             "url": response.get("url", ""), 
@@ -60,7 +70,10 @@ with DAG(
 
     ## Task 4 - [L]oad the data into the SQL DataBase
     @task
-    def load_data_to_postgres(apod_data, postgres_hook):
+    def load_data_to_postgres(apod_data):
+        
+        postgres_hook = PostgresHook(postgres_conn_id = "my_connection_id")
+
         ### Define the insert query
         insert_query = """
         INSERT INTO apod_data (title, explanation, url, date, media_type)
@@ -80,7 +93,5 @@ with DAG(
         
     
     ## Define the task dependencies:
-    """
-    first_value = start()
-    second_value = second_setp(first_value)...
-    """
+    transformed_data = transform_apod_data(extract_apod.output)
+    create_table_task >> extract_apod >> transformed_data >> load_data_to_postgres(transformed_data)
